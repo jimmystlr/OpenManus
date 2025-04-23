@@ -9,7 +9,6 @@ from app.prompt.browser import NEXT_STEP_PROMPT, SYSTEM_PROMPT
 from app.schema import Message, ToolChoice
 from app.tool import BrowserUseTool, Terminate, ToolCollection
 
-
 # Avoid circular import if BrowserAgent needs BrowserContextHelper
 if TYPE_CHECKING:
     from app.agent.base import BaseAgent  # Or wherever memory is defined
@@ -32,6 +31,9 @@ class BrowserContextHelper:
                 return None
             if hasattr(result, "base64_image") and result.base64_image:
                 self._current_base64_image = result.base64_image
+                logger.debug(
+                    f"Browser state has base64_image, length = {len(result.base64_image)}"
+                )
             else:
                 self._current_base64_image = None
             return json.loads(result.output)
@@ -42,7 +44,13 @@ class BrowserContextHelper:
     async def format_next_step_prompt(self) -> str:
         """Gets browser state and formats the browser prompt."""
         browser_state = await self.get_browser_state()
-        url_info, tabs_info, content_above_info, content_below_info = "", "", "", ""
+        (
+            url_info,
+            tabs_info,
+            content_above_info,
+            content_below_info,
+            interactive_elements,
+        ) = ("", "", "", "", "")
         results_info = ""  # Or get from agent if needed elsewhere
 
         if browser_state and not browser_state.get("error"):
@@ -50,6 +58,7 @@ class BrowserContextHelper:
             tabs = browser_state.get("tabs", [])
             if tabs:
                 tabs_info = f"\n   {len(tabs)} tab(s) available"
+            interactive_elements = browser_state.get("interactive_elements", "")
             pixels_above = browser_state.get("pixels_above", 0)
             pixels_below = browser_state.get("pixels_below", 0)
             if pixels_above > 0:
@@ -68,6 +77,7 @@ class BrowserContextHelper:
         return NEXT_STEP_PROMPT.format(
             url_placeholder=url_info,
             tabs_placeholder=tabs_info,
+            elements_placeholder=interactive_elements,
             content_above_placeholder=content_above_info,
             content_below_placeholder=content_below_info,
             results_placeholder=results_info,

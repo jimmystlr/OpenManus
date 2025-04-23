@@ -1,18 +1,20 @@
 import asyncio
 
 from app.agent.manus import Manus
+from app.agent.message_reader import MessageReader
 from app.logger import logger
 
 
 async def main():
     agent = Manus()
+    # agent = MessageReader()
     try:
         prompt = input("Enter your prompt: ")
         if not prompt.strip():
             logger.warning("Empty prompt provided.")
             return
 
-        logger.warning("Processing your request...")
+        logger.info("Processing your request...")
         await agent.run(prompt)
         logger.info("Request processing completed.")
     except KeyboardInterrupt:

@@ -1,15 +1,20 @@
 import asyncio
 import os
-from typing import Optional
+import re
+from typing import List, Optional
 
 from app.exceptions import ToolError
 from app.tool.base import BaseTool, CLIResult
+from app.tool.user_control import UserControlTool
 
-
-_BASH_DESCRIPTION = """Execute a bash command in the terminal.
+_BASH_DESCRIPTION = """Execute a bash command in the terminal. Use for running code, installing packages, or managing files.
 * Long running commands: For commands that may run indefinitely, it should be run in the background and the output should be redirected to a file, e.g. command = `python3 app.py > server.log 2>&1 &`.
 * Interactive: If a bash command returns exit code `-1`, this means the process is not yet finished. The assistant must then send a second call to terminal with an empty `command` (which will retrieve any additional logs), or it can send additional text (set `command` to the text) to STDIN of the running process, or it can send command=`ctrl+c` to interrupt the process.
 * Timeout: If a command execution result says "Command timed out. Sending SIGINT to the process", the assistant should retry running the command in the background.
+* Restrictions:
+* 1. Only use bash commands that are safe to run in a terminal.
+* 2. DO NOT run bash commands that may harm the system or user, for example, running a command that may delete all files on the system.
+* 3. DO NOT run bash commands that may expose sensitive information, for example, accessing files out of working directory.
 """
 
 
@@ -131,6 +136,38 @@ class Bash(BaseTool):
 
     _session: Optional[_BashSession] = None
 
+    # 定义危险命令关键字列表
+    _DANGEROUS_COMMANDS = [
+        r"\brm\b",  # 删除文件
+        r"\bsudo\b",  # 超级用户权限
+        r"\.\.(?:/|\\\\",  # 访问上级目录
+        r"\bmkfs\b",  # 格式化文件系统
+        r"\bdd\b",  # 磁盘操作
+        r"\bchmod\b",  # 修改权限
+        r"\bmv\b",  # 移动文件
+        r">/dev",  # 写入设备文件
+        r"2>/dev",  # 写入设备文件
+        r"\bkill\b",  # 终止进程
+        r"\bpkill\b",  # 终止进程
+        r"\bwget\b",  # 下载文件
+        r"\bcurl\b.*\b-o\b",  # 下载文件并输出
+        r"\bchown\b",  # 修改所有者
+        r"\bexport\b",  # 设置环境变量
+        r"\bsource\b",  # 执行脚本
+        r"\beval\b",  # 执行字符串命令
+    ]
+
+    def _is_dangerous_command(self, command: str) -> bool:
+        """检查命令是否包含危险操作"""
+        if not command:
+            return False
+
+        for pattern in self._DANGEROUS_COMMANDS:
+            if re.search(pattern, command):
+                return True
+
+        return False
+
     async def execute(
         self, command: str | None = None, restart: bool = False, **kwargs
     ) -> CLIResult:
@@ -147,6 +184,25 @@ class Bash(BaseTool):
             await self._session.start()
 
         if command is not None:
+            # 检查是否为危险命令
+            if self._is_dangerous_command(command):
+                # 创建用户控制工具实例
+                user_control = UserControlTool()
+                # 请求用户确认
+                result = await user_control.execute(
+                    message=f"检测到潜在危险命令: '{command}'\n是否继续执行? (yes/no, 默认为yes)",
+                    timeout=60,
+                    default_action="continue",
+                )
+
+                # 获取用户输入
+                user_input = str(result).strip().lower()
+
+                # 如果用户拒绝执行或明确输入no
+                if user_input == "no":
+                    return CLIResult(system="命令已被用户取消执行。")
+
+            # 执行命令
             return await self._session.run(command)
 
         raise ToolError("no command provided.")

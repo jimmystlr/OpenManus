@@ -1,7 +1,9 @@
 import asyncio
 import base64
 import json
-from typing import Generic, Optional, TypeVar
+import os
+from pathlib import Path
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from browser_use import Browser as BrowserUseBrowser
 from browser_use import BrowserConfig
@@ -12,9 +14,9 @@ from pydantic_core.core_schema import ValidationInfo
 
 from app.config import config
 from app.llm import LLM
+from app.logger import logger  # Assuming a logger is set up in your app
 from app.tool.base import BaseTool, ToolResult
 from app.tool.web_search import WebSearch
-
 
 _BROWSER_DESCRIPTION = """\
 A powerful browser automation tool that allows interaction with web pages through various actions.
@@ -62,7 +64,27 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                     "open_tab",
                     "close_tab",
                 ],
-                "description": "The browser action to perform",
+                "description": """\
+The browser action to perform. Due to the element indexes might be changed after executing an action,
+DO NOT select multiple browser use tools in one step for multiple browser actions BUT ONLY select the one to be executed next
+Actions usage and their parameters required:
+- go_to_url: navigate to the url specified by "url"
+- click_element: click on the element at "index"
+- input_text: type "text" in the input box lat "index"
+- scroll_down: scroll down the page by "scroll_amount" pixels
+- scroll_up: scroll up the page by "scroll_amount" pixels
+- scroll_to_text: scroll to the location of specific "text" on the page
+- send_keys: send keyboard "keys" to the current page
+- get_dropdown_options: get all options from dropdown element at "index"
+- select_dropdown_option: select the option with "text" from dropdown at "index"
+- go_back: navigate to the previous page in browser history
+- web_search: perform a web search with the specified "query" and navigate to first result
+- wait: pause execution for specified number of "seconds"
+- extract_content: extract and analyze content from the current page based on "goal"
+- switch_tab: switch to browser tab with the specified "tab_id"
+- open_tab: open a new browser tab and navigate to the specified "url"
+- close_tab: close the current browser tab
+""",
             },
             "url": {
                 "type": "string",
@@ -90,7 +112,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
             },
             "goal": {
                 "type": "string",
-                "description": "Extraction goal for 'extract_content' action",
+                "description": "Content extraction goal for 'extract_content' action",
             },
             "keys": {
                 "type": "string",
@@ -181,6 +203,14 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                 and config.browser_config.new_context_config
             ):
                 context_config = config.browser_config.new_context_config
+
+            # Check if we need to load cookies from a file
+            if (
+                config.browser_config
+                and hasattr(config.browser_config, "cookies_file")
+                and config.browser_config.cookies_file
+            ):
+                context_config.cookies_file = config.browser_config.cookies_file
 
             self.context = await self.browser.new_context(context_config)
             self.dom_service = DomService(await self.context.get_current_page())
@@ -383,21 +413,35 @@ class BrowserUseTool(BaseTool, Generic[Context]):
 
                     content = markdownify.markdownify(await page.content())
 
+                    # Take a screenshot of the page
+                    screenshot = await page.screenshot(
+                        full_page=False, animations="disabled", type="jpeg", quality=60
+                    )
+                    screenshot_base64 = base64.b64encode(screenshot).decode("utf-8")
+
                     prompt = f"""\
-Your task is to extract the content of the page. You will be given a page and a goal, and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format.
+Your task is to extract the content of the page. You will be given a page content, a screenshot, and a goal. You should extract all relevant information around this goal from the page, using both the text content and visual information from the screenshot. If the goal is vague, summarize the page. Respond in json format.
 Extraction goal: {goal}
 
 Page content:
 {content[:max_content_length]}
 """
-                    messages = [{"role": "system", "content": prompt}]
+                    # Create messages with both text and image
+                    messages = [
+                        {"role": "system", "content": prompt},
+                        {
+                            "role": "user",
+                            "content": "Here is the screenshot of the page:",
+                            "base64_image": screenshot_base64,
+                        },
+                    ]
 
                     # Define extraction function schema
                     extraction_function = {
                         "type": "function",
                         "function": {
                             "name": "extract_content",
-                            "description": "Extract specific information from a webpage based on a goal",
+                            "description": "Extract specific information from a webpage based on a goal, using both text content and visual information",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
@@ -408,6 +452,23 @@ Page content:
                                             "text": {
                                                 "type": "string",
                                                 "description": "Text content extracted from the page",
+                                            },
+                                            "visual_elements": {
+                                                "type": "array",
+                                                "description": "Visual elements identified from the screenshot",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "description": {
+                                                            "type": "string",
+                                                            "description": "Description of the visual element",
+                                                        },
+                                                        "relevance": {
+                                                            "type": "string",
+                                                            "description": "Relevance to the extraction goal",
+                                                        },
+                                                    },
+                                                },
                                             },
                                             "metadata": {
                                                 "type": "object",
@@ -505,7 +566,7 @@ Page content:
             await page.wait_for_load_state()
 
             screenshot = await page.screenshot(
-                full_page=True, animations="disabled", type="jpeg", quality=100
+                full_page=False, animations="disabled", type="jpeg", quality=60
             )
 
             screenshot = base64.b64encode(screenshot).decode("utf-8")
@@ -530,6 +591,7 @@ Page content:
                 },
                 "viewport_height": viewport_height,
             }
+            logger.debug(f"Browser state info: {state_info}")
 
             return ToolResult(
                 output=json.dumps(state_info, indent=4, ensure_ascii=False),

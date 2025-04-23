@@ -16,5 +16,7 @@
     },
     "files.insertFinalNewline": true,
     "files.trimTrailingWhitespace": true,
-    "editor.formatOnSave": true
+    "editor.formatOnSave": true,
+    "python.pythonPath": "/usr/local/anaconda3/envs/open_manus/bin/python",
+    "python.venvPath": "/usr/local/anaconda3/envs"
 }

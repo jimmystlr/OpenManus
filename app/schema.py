@@ -159,10 +159,24 @@ class Message(BaseModel):
 class Memory(BaseModel):
     messages: List[Message] = Field(default_factory=list)
     max_messages: int = Field(default=100)
+    # FIXME(Loic): Make it more configurable and robust but not fixed,
+    #              might be changed to upload files first and use file path instead
+    image_messages: List[Message] = Field(default_factory=list)
+    max_image_messages: int = Field(default=3)
 
     def add_message(self, message: Message) -> None:
         """Add a message to memory"""
         self.messages.append(message)
+
+        # Handle image messages, reserve max_image_messages number of images to avoid
+        # sending too much base64 image data in a single request
+        if message.base64_image:
+            self.image_messages.append(message)
+            if len(self.image_messages) > self.max_image_messages:
+                self.image_messages[
+                    len(self.image_messages) - 1 - self.max_image_messages
+                ].base64_image = None
+
         # Optional: Implement message limit
         if len(self.messages) > self.max_messages:
             self.messages = self.messages[-self.max_messages :]

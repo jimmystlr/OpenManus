@@ -291,12 +291,15 @@ class WebSearch(BaseTool):
         self, query: str, num_results: int, search_params: Dict[str, Any]
     ) -> List[SearchResult]:
         """Try all search engines in the configured order."""
+        logger.debug(f"Search parameters: {search_params}")
         engine_order = self._get_engine_order()
         failed_engines = []
 
         for engine_name in engine_order:
             engine = self._search_engine[engine_name]
-            logger.info(f"🔎 Attempting search with {engine_name.capitalize()}...")
+            logger.info(
+                f"🔎 Attempting search with [{engine_name.capitalize()}] with query [{query}] with num results [{num_results}]..."
+            )
             search_items = await self._perform_search_with_engine(
                 engine, query, num_results, search_params
             )
@@ -395,6 +398,7 @@ class WebSearch(BaseTool):
         search_params: Dict[str, Any],
     ) -> List[SearchItem]:
         """Execute search with the given engine and parameters."""
+        logger.debug(f"Try to search for query {query}")
         return await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: list(
@@ -412,7 +416,7 @@ if __name__ == "__main__":
     web_search = WebSearch()
     search_response = asyncio.run(
         web_search.execute(
-            query="Python programming", fetch_content=True, num_results=1
+            query="Python programming", fetch_content=True, num_results=5
         )
     )
-    print(search_response.to_tool_result())
+    print(search_response)

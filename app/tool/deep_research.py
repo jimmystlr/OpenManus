@@ -1,153 +1,48 @@
 import asyncio
-import json
-import re
-import time
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator, PrivateAttr
 
+from app.config import config
 from app.exceptions import ToolError
-from app.llm import LLM
 from app.logger import logger
-from app.schema import ToolChoice
 from app.tool.base import BaseTool, ToolResult
-from app.tool.web_search import SearchResult, WebSearch
+from app.tool.deep_research_engine import (
+    BuiltinDeepResearchEngine,
+    DeepResearchEngine,
+    DeepResearchError,
+    DeepResearchItem,
+    PerplexityDeepResearchEngine,
+)
 
 
-# Prompts for LLM interactions
-OPTIMIZE_QUERY_PROMPT = """
-You are a research assistant helping to optimize a search query for web research.
-Your task is to reformulate the given query to be more effective for web searches.
-Make it specific, use relevant keywords, and ensure it's clear and concise.
-
-Original query: {query}
-
-Provide only the optimized query text without any explanation or additional formatting.
-"""
-
-EXTRACT_INSIGHTS_PROMPT = """
-Analyze the following content and extract key insights related to the research query.
-For each insight, assess its relevance to the query on a scale of 0.0 to 1.0.
-
-Research query: {query}
-Content to analyze:
-{content}
-
-Extract up to 3 most important insights from this content. For each insight:
-1. Provide the insight content
-2. Provide relevance score (0.0-1.0)
-"""
-
-GENERATE_FOLLOW_UPS_PROMPT = """
-Based on the insights discovered so far, generate follow-up research queries to explore gaps or related areas.
-These should help deepen our understanding of the topic.
-
-Original query: {original_query}
-Current query: {current_query}
-Key insights so far:
-{insights}
-
-Generate up to 3 specific follow-up queries that would help address gaps in our current knowledge.
-Each query should be concise and focused on a specific aspect of the research topic.
-"""
-
-# Constants for insight parsing
-DEFAULT_RELEVANCE_SCORE = 1.0
-FALLBACK_RELEVANCE_SCORE = 0.7
-FALLBACK_CONTENT_LIMIT = 500
-# Pattern to detect start of an insight (number., -, *, •) and capture content
-INSIGHT_MARKER_PATTERN = re.compile(r"^\s*(?:\d+\.|-|\*|•)\s*(.*)")
-# Pattern to detect relevance score, capturing the number (case-insensitive)
-RELEVANCE_SCORE_PATTERN = re.compile(r"relevance.*?:.*?(\d\.?\d*)", re.IGNORECASE)
-
-
-class ResearchInsight(BaseModel):
-    """A single insight discovered during research."""
-
-    model_config = ConfigDict(frozen=True)  # Make insights immutable
-
-    content: str = Field(description="The insight content")
-    source_url: str = Field(description="URL where this insight was found")
-    source_title: Optional[str] = Field(default=None, description="Title of the source")
-    relevance_score: float = Field(
-        default=1.0, description="Relevance score (0.0-1.0)", ge=0.0, le=1.0
-    )
-
-    def __str__(self) -> str:
-        """Format insight as string with source attribution."""
-        source = self.source_title or self.source_url
-        return f"{self.content} [Source: {source}]"
-
-
-class ResearchContext(BaseModel):
-    """Research context for tracking research progress."""
-
-    query: str = Field(description="The original research query")
-    insights: List[ResearchInsight] = Field(
-        default_factory=list, description="Key insights discovered"
-    )
-    follow_up_queries: List[str] = Field(
-        default_factory=list, description="Generated follow-up queries"
-    )
-    visited_urls: Set[str] = Field(
-        default_factory=set, description="URLs visited during research"
-    )
-    current_depth: int = Field(
-        default=0, description="Current depth of research exploration", ge=0
-    )
-    max_depth: int = Field(
-        default=2, description="Maximum depth of research to reach", ge=1
-    )
-
-
-class ResearchSummary(ToolResult):
-    """Comprehensive summary of deep research results."""
+class DeepResearchResult(ToolResult):
+    """Structured response from the deep research tool, inheriting ToolResult."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    query: str = Field(description="The original research query")
-    insights: List[ResearchInsight] = Field(
-        default_factory=list, description="Key insights discovered"
-    )
-    visited_urls: Set[str] = Field(
-        default_factory=set, description="URLs visited during research"
-    )
-    depth_reached: int = Field(
-        default=0, description="Maximum depth of research reached", ge=0
+    query: str = Field(description="The research query that was executed")
+    content: str = Field(default="", description="The research content result")
+    reasoning: str = Field(default="", description="The reasoning procedure")
+    citations: List[Dict[str, str]] = Field(
+        default_factory=list, description="Citations for the research content"
     )
 
     @model_validator(mode="after")
-    def populate_output(self) -> "ResearchSummary":
+    def populate_output(self) -> "DeepResearchResult":
         """Populate the output field after validation."""
-        # Group and sort insights by relevance
-        grouped_insights = {
-            "Key Findings": [i for i in self.insights if i.relevance_score >= 0.8],
-            "Additional Information": [
-                i for i in self.insights if 0.5 <= i.relevance_score < 0.8
-            ],
-            "Supplementary Information": [
-                i for i in self.insights if i.relevance_score < 0.5
-            ],
-        }
+        if self.error:
+            return self
 
-        sections = [
-            f"# Research: {self.query}\n",
-            f"**Sources**: {len(self.visited_urls)} | **Depth**: {self.depth_reached + 1}\n",
-        ]
+        result_text = [f"DeepResearch results for '{self.query}':"]
+        result_text.append(f"[Content]\n{self.content}")
+        result_text.append(f"[Reasoning]\n{self.reasoning}")
+        result_text.append(f"[Citations]\n" +
+            "\n".join(f"[{i+1}]Title: {d['title']}, URL: {d['url']}"
+                      for i, d in enumerate(self.citations)))
 
-        for section_title, insights in grouped_insights.items():
-            if insights:
-                sections.append(f"## {section_title}")
-                for i, insight in enumerate(insights, 1):
-                    sections.extend(
-                        [
-                            insight.content,
-                            f"> Source: [{insight.source_title or 'Link'}]({insight.source_url})\n",
-                        ]
-                    )
-
-        # Assign the formatted string to the 'output' field inherited from ToolResult
-        self.output = "\n".join(sections)
+        # Set the output field to the content for display
+        self.output = "\n\n\n".join(result_text)
         return self
 
 
@@ -156,9 +51,18 @@ class DeepResearch(BaseTool):
 
     name: str = "deep_research"
     description: str = """
-    Performs comprehensive research on a topic through multi-level web searches
-    and content analysis. Returns a structured summary of findings with source
-    attribution and relevance ratings.
+    DeepResearch is a specialized tool designed for conducting in-depth research and analytical synthesis on complex topics.
+    Unlike general-purpose tools like WebSearch, which are ideal for quick lookups or retrieving real-time information, DeepResearch focuses on generating well-structured, insight-driven reports using curated insights and verified sources provided in advance.
+    This tool excels at producing comprehensive, multi-perspective analyses, contextualizing key points, and weaving them into cohesive narratives.
+    It should be the preferred choice whenever the task involves critical thinking, synthesis of multiple viewpoints, or writing detailed content based on a set of predefined insights and sources.
+
+    Use DeepResearch when:
+    * A research report, strategy memo, or analytical write-up is needed.
+    * You have a list of insights and source materials to work from.
+    * You need more than surface-level summaries —you're aiming for depth, clarity, and structured reasoning.
+
+    Avoid using WebSearch when the required content involves synthesis, comparison, or thematic organization.
+    Instead, delegate such tasks to DeepResearch for higher-quality results.
     """
     parameters: dict = {
         "type": "object",
@@ -182,18 +86,26 @@ class DeepResearch(BaseTool):
                 "description": "Maximum number of insights to return. Default is 20.",
                 "default": 20,
             },
-            "time_limit_seconds": {
+            "timeout": {
                 "type": "integer",
-                "description": "Maximum execution time in seconds. Default is 120.",
-                "default": 120,
+                "description": "Maximum execution time in seconds. Reasonable timeout should take the complexity of the task into account. Default is 600.",
+                "default": 600,
             },
         },
         "required": ["query"],
     }
 
-    # Dependency injection for easier testing
-    search_tool: WebSearch = Field(default_factory=WebSearch)
-    llm: LLM = Field(default_factory=LLM)
+    # Available research engines
+    # _research_engines: Dict[str, DeepResearchEngine] = {
+    #     "builtin": BuiltinDeepResearchEngine(),
+    #     "perplexity": PerplexityDeepResearchEngine(),
+    # }
+    _research_engines: Dict[str, DeepResearchEngine] = PrivateAttr(
+        default_factory=lambda: {
+            "builtin": BuiltinDeepResearchEngine(),
+            "perplexity": PerplexityDeepResearchEngine(),
+        }
+    )
 
     async def execute(
         self,
@@ -201,337 +113,134 @@ class DeepResearch(BaseTool):
         max_depth: int = 2,
         results_per_search: int = 5,
         max_insights: int = 20,
-        time_limit_seconds: int = 120,
-    ) -> ResearchSummary:
+        timeout: int = 600,
+    ) -> DeepResearchResult:
         """Execute deep research on the given query."""
-        # Normalize parameters
-        max_depth = max(1, min(max_depth, 5))
-        results_per_search = max(1, min(results_per_search, 20))
 
-        # Initialize research context and set deadline
-        context = ResearchContext(query=query, max_depth=max_depth)
-        deadline = time.time() + time_limit_seconds
+        # Get settings from config
+        deep_research_config = config.deep_research_config
+        retry_delay = deep_research_config.retry_delay if deep_research_config else 60
+        max_retries = deep_research_config.max_retries if deep_research_config else 3
 
-        try:
-            # Initiate research process with optimized query
-            optimized_query = await self._generate_optimized_query(query)
-            await self._research_graph(
-                context=context,
-                query=optimized_query,
-                results_count=results_per_search,
-                deadline=deadline,
-            )
-        except ToolError as e:
-            logger.error(f"Research error: {str(e)}")
-
-        # Prepare final summary
-        return ResearchSummary(
-            query=query,
-            insights=sorted(
-                context.insights, key=lambda x: x.relevance_score, reverse=True
-            )[:max_insights],
-            visited_urls=context.visited_urls,
-            depth_reached=context.current_depth,
-        )
-
-    async def _generate_optimized_query(self, query: str) -> str:
-        """Generate an optimized search query using LLM."""
-        try:
-            prompt = OPTIMIZE_QUERY_PROMPT.format(query=query)
-            response = await self.llm.ask_tool(
-                [{"role": "user", "content": prompt}],
-                tools=[
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "optimize_query",
-                            "description": "Generate an optimized search query",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "query": {
-                                        "type": "string",
-                                        "description": "The optimized search query",
-                                    }
-                                },
-                                "required": ["query"],
-                            },
-                        },
-                    }
-                ],
-                tool_choice=ToolChoice.REQUIRED,
-                stream=False,
-            )
-
-            # Extract the query from the tool_call response
-            if response and response.tool_calls and len(response.tool_calls) > 0:
-                tool_call = response.tool_calls[0]
-                arguments = json.loads(tool_call.function.arguments)
-                optimized_query = arguments.get("query", "")
-            else:
-                # Fallback to original query if tool call failed
-                logger.warning("Tool call failed to return a valid response")
-                return query
-
-            if not optimized_query:
-                logger.warning("Generated empty optimized query, using original")
-                return query
-
-            logger.info(f"Optimized query: '{optimized_query}'")
-            return optimized_query
-        except Exception as e:
-            logger.warning(f"Failed to optimize query: {str(e)}")
-            return query  # Fall back to original query on error
-
-    async def _research_graph(
-        self,
-        context: ResearchContext,
-        query: str,
-        results_count: int,
-        deadline: float,
-    ) -> None:
-        """Run a complete research cycle (search, analyze, generate follow-ups)."""
-        # Check termination conditions
-        if time.time() >= deadline or context.current_depth >= context.max_depth:
-            return
-
-        # Log current research step
-        logger.info(f"Research cycle at depth {context.current_depth + 1}")
-
-        # 1. Web search
-        search_results = await self._search_web(query, results_count)
-        if not search_results:
-            return
-
-        # 2. Extract insights
-        new_insights = await self._extract_insights(
-            context, search_results, context.query, deadline
-        )
-        if not new_insights:
-            return
-
-        # 3. Generate follow-up queries
-        follow_up_queries = await self._generate_follow_ups(
-            new_insights, query, context.query
-        )
-        context.follow_up_queries.extend(follow_up_queries)
-
-        # Update depth and proceed to next level
-        context.current_depth += 1
-
-        # 4. Continue research with follow-up queries
-        if follow_up_queries and context.current_depth < context.max_depth:
-            tasks = []  # Create a list to hold the tasks
-            for follow_up in follow_up_queries[:2]:  # Limit branching factor
-                if time.time() >= deadline:
-                    break
-
-                # Create a coroutine for the recursive research call
-                task = self._research_graph(
-                    context=context,
-                    query=follow_up,
-                    results_count=max(1, results_count - 1),  # Reduce result count
-                    deadline=deadline,
+        # Try researching with retries when all engines fail
+        for retry_count in range(max_retries + 1):
+            try:
+                research_item = await self._try_all_engines(
+                    query=query,
+                    max_depth=max_depth,
+                    timeout=timeout,
                 )
-                tasks.append(task)  # Add the task to the list
 
-            # Run all the created tasks concurrently
-            if tasks:
-                await asyncio.gather(*tasks)
+                if research_item:
+                    # Return a successful structured response
+                    citations = []
+                    if research_item.citations:
+                        citations = [
+                            {"title": citation.title, "url": citation.url}
+                            for citation in research_item.citations
+                        ]
 
-    async def _search_web(self, query: str, results_count: int) -> List[SearchResult]:
-        """Perform web search for the given query."""
-        search_response = await self.search_tool.execute(
-            query=query, num_results=results_count, fetch_content=True
-        )
-        return [] if search_response.error else search_response.results
-
-    async def _extract_insights(
-        self,
-        context: ResearchContext,
-        results: List[SearchResult],
-        original_query: str,
-        deadline: float,
-    ) -> List[ResearchInsight]:
-        """Extract insights from search results."""
-        all_insights = []
-
-        for rst in results:
-            # Skip if URL already visited or time exceeded
-            if rst.url in context.visited_urls or time.time() >= deadline:
-                continue
-
-            context.visited_urls.add(rst.url)
-
-            # Skip if no content available
-            if not rst.raw_content:
-                continue
-
-            # Extract insights using LLM
-            insights = await self._analyze_content(
-                content=rst.raw_content[:10000],  # Limit content size
-                url=rst.url,
-                title=rst.title,
-                query=original_query,
-            )
-
-            all_insights.extend(insights)
-            context.insights.extend(insights)
-
-            # Log discovered insights
-            logger.info(f"Extracted {len(insights)} insights from {rst.url}")
-
-        return all_insights
-
-    async def _generate_follow_ups(
-        self, insights: List[ResearchInsight], current_query: str, original_query: str
-    ) -> List[str]:
-        """Generate follow-up queries based on insights."""
-        if not insights:
-            return []
-
-        # Format insights for the prompt
-        insights_text = "\n".join([f"- {insight.content}" for insight in insights[:5]])
-
-        # Create prompt for generating follow-up queries
-        prompt = GENERATE_FOLLOW_UPS_PROMPT.format(
-            original_query=original_query,
-            current_query=current_query,
-            insights=insights_text,
-        )
-
-        # Get follow-up queries from LLM using structured output
-        response = await self.llm.ask_tool(
-            [{"role": "user", "content": prompt}],
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "generate_follow_ups",
-                        "description": "Generate follow-up queries based on research insights",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "follow_up_queries": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": "List of follow-up queries (max 3) that would help address gaps in current knowledge",
-                                    "maxItems": 3,
-                                }
-                            },
-                            "required": ["follow_up_queries"],
-                        },
-                    },
-                }
-            ],
-            tool_choice=ToolChoice.REQUIRED,
-            stream=False,
-        )
-
-        # Extract queries from the tool response
-        queries = []
-        if response and response.tool_calls and len(response.tool_calls) > 0:
-            tool_call = response.tool_calls[0]
-            arguments = json.loads(tool_call.function.arguments)
-            queries = arguments.get("follow_up_queries", [])
-
-        # Ensure we don't return more than 3 queries
-        return queries[:3]
-
-    async def _analyze_content(
-        self, content: str, url: str, title: str, query: str
-    ) -> List[ResearchInsight]:
-        """Extract insights from content based on relevance to query."""
-        prompt = EXTRACT_INSIGHTS_PROMPT.format(
-            query=query, content=content[:5000]  # Limit content size
-        )
-
-        response = await self.llm.ask_tool(
-            [{"role": "user", "content": prompt}],
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "extract_insights",
-                        "description": "Extract key insights from content with relevance scores",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "insights": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "content": {
-                                                "type": "string",
-                                                "description": "The insight content",
-                                            },
-                                            "relevance_score": {
-                                                "type": "number",
-                                                "description": "Relevance score between 0.0 and 1.0",
-                                                "minimum": 0.0,
-                                                "maximum": 1.0,
-                                            },
-                                        },
-                                        "required": ["content", "relevance_score"],
-                                    },
-                                    "description": "List of key insights extracted from the content",
-                                    "maxItems": 3,
-                                }
-                            },
-                            "required": ["insights"],
-                        },
-                    },
-                }
-            ],
-            tool_choice=ToolChoice.REQUIRED,
-            stream=False,
-        )
-
-        insights = []
-
-        # Process structured JSON response
-        if response and response.tool_calls and len(response.tool_calls) > 0:
-            tool_call = response.tool_calls[0]
-            arguments = json.loads(tool_call.function.arguments)
-            extracted_insights = arguments.get("insights", [])
-
-            for insight_data in extracted_insights:
-                insights.append(
-                    ResearchInsight(
-                        content=insight_data.get("content", ""),
-                        source_url=url,
-                        source_title=title,
-                        relevance_score=insight_data.get(
-                            "relevance_score", FALLBACK_RELEVANCE_SCORE
-                        ),
+                    return DeepResearchResult(
+                        query=query,
+                        content=research_item.content,
+                        reasoning=research_item.reasoning,
+                        citations=citations,
                     )
+
+            except Exception as e:
+                logger.error(f"Research error: {str(e)}")
+
+            if retry_count < max_retries:
+                # All engines failed, wait and retry
+                logger.warning(
+                    f"All research engines failed. Waiting {retry_delay} seconds before retry {retry_count + 1}/{max_retries}..."
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"All research engines failed after {max_retries} retries. Giving up."
                 )
 
-        # Fallback: if no structured insights found, use fallback approach
-        if not insights:
-            logger.warning(
-                f"Could not parse structured insights from LLM response for {url}. Using fallback."
-            )
-            insights.append(
-                ResearchInsight(
-                    content=f"Failed to extract structured insights from content about {title or url}."[
-                        :FALLBACK_CONTENT_LIMIT
-                    ],
-                    source_url=url,
-                    source_title=title,
-                    relevance_score=FALLBACK_RELEVANCE_SCORE,
-                )
+        # Return an error response
+        return DeepResearchResult(
+            query=query,
+            error="All research engines failed to return results after multiple retries.",
+        )
+
+    async def _try_all_engines(
+        self, query: str, max_depth: int, timeout: int
+    ) -> Optional[DeepResearchItem]:
+        """Try all research engines in the configured order."""
+        engine_order = self._get_engine_order()
+        failed_engines = []
+
+        for engine_name in engine_order:
+            engine = self._research_engines[engine_name]
+            logger.info(
+                f"🔍 Attempting research with [{engine_name.capitalize()}] with query [{query}]..."
             )
 
-        return insights
+            try:
+                # Execute research with the current engine
+                research_item = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: engine.research(
+                        query=query,
+                        max_depth=max_depth,
+                        timeout=timeout,
+                    ),
+                )
+
+                if research_item:
+                    if failed_engines:
+                        logger.info(
+                            f"Research successful with {engine_name.capitalize()} after trying: {', '.join(failed_engines)}"
+                        )
+                    return research_item
+
+            except DeepResearchError as e:
+                logger.warning(f"Engine {engine_name} failed: {str(e)}")
+                failed_engines.append(engine_name)
+            except Exception as e:
+                logger.error(f"Unexpected error with engine {engine_name}: {str(e)}")
+                failed_engines.append(engine_name)
+
+        if failed_engines:
+            logger.error(f"All research engines failed: {', '.join(failed_engines)}")
+        return None
+
+    def _get_engine_order(self) -> List[str]:
+        """Determines the order in which to try research engines."""
+        deep_research_config = config.deep_research_config
+
+        if deep_research_config:
+            preferred = deep_research_config.engine.lower()
+            fallbacks = [
+                engine.lower() for engine in deep_research_config.fallback_engines
+            ]
+        else:
+            preferred = "builtin"
+            fallbacks = []
+
+        # Start with preferred engine, then fallbacks, then remaining engines
+        engine_order = [preferred] if preferred in self._research_engines else []
+        engine_order.extend(
+            [
+                fb
+                for fb in fallbacks
+                if fb in self._research_engines and fb not in engine_order
+            ]
+        )
+        engine_order.extend(
+            [e for e in self._research_engines if e not in engine_order]
+        )
+
+        return engine_order
 
 
 if __name__ == "__main__":
     deep_research = DeepResearch()
     result = asyncio.run(
-        deep_research.execute(
-            "What is deep learning", max_depth=1, results_per_search=2
-        )
+        deep_research.execute("What is deep learning", max_depth=1, timeout=600)
     )
     print(result)

@@ -2,6 +2,12 @@
 # Logs
 logs/
 
+# Cookies
+cookies/
+
+# Images
+images/
+
 # Data
 data/
 
@@ -13,6 +19,9 @@ workspace/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Tmp testing files
+test*.py
 
 # C extensions
 *.so

@@ -59,6 +59,25 @@ class SearchSettings(BaseModel):
     )
 
 
+class DeepResearchSettings(BaseModel):
+    engine: str = Field(
+        default="builtin",
+        description="Deep research engine to use (builtin or perplexity)",
+    )
+    fallback_engines: List[str] = Field(
+        default_factory=lambda: ["builtin"],
+        description="Fallback deep research engines to try if the primary engine fails",
+    )
+    retry_delay: int = Field(
+        default=60,
+        description="Seconds to wait before retrying all engines again after they all fail",
+    )
+    max_retries: int = Field(
+        default=3,
+        description="Maximum number of times to retry all engines when all fail",
+    )
+
+
 class BrowserSettings(BaseModel):
     headless: bool = Field(False, description="Whether to run browser in headless mode")
     disable_security: bool = Field(
@@ -81,6 +100,9 @@ class BrowserSettings(BaseModel):
     )
     max_content_length: int = Field(
         2000, description="Maximum length for content retrieval operations"
+    )
+    cookies_file: Optional[str] = Field(
+        None, description="Path to a file containing cookies"
     )
 
 
@@ -116,6 +138,9 @@ class AppConfig(BaseModel):
     )
     search_config: Optional[SearchSettings] = Field(
         None, description="Search configuration"
+    )
+    deep_research_config: Optional[DeepResearchSettings] = Field(
+        None, description="Deep research configuration"
     )
     mcp_config: Optional[MCPSettings] = Field(None, description="MCP configuration")
 
@@ -165,6 +190,7 @@ class Config:
         llm_overrides = {
             k: v for k, v in raw_config.get("llm", {}).items() if isinstance(v, dict)
         }
+        print("llm_overrides", llm_overrides)
 
         default_settings = {
             "model": base_llm.get("model"),
@@ -214,6 +240,14 @@ class Config:
         search_settings = None
         if search_config:
             search_settings = SearchSettings(**search_config)
+
+        deep_research_config = raw_config.get("deep_research", {})
+        deep_research_settings = None
+        if deep_research_config:
+            deep_research_settings = DeepResearchSettings(**deep_research_config)
+        else:
+            deep_research_settings = DeepResearchSettings()
+
         sandbox_config = raw_config.get("sandbox", {})
         if sandbox_config:
             sandbox_settings = SandboxSettings(**sandbox_config)
@@ -238,6 +272,7 @@ class Config:
             "sandbox": sandbox_settings,
             "browser_config": browser_settings,
             "search_config": search_settings,
+            "deep_research_config": deep_research_settings,
             "mcp_config": mcp_settings,
         }
 
@@ -258,6 +293,10 @@ class Config:
     @property
     def search_config(self) -> Optional[SearchSettings]:
         return self._config.search_config
+
+    @property
+    def deep_research_config(self) -> Optional[DeepResearchSettings]:
+        return self._config.deep_research_config
 
     @property
     def mcp_config(self) -> MCPSettings:

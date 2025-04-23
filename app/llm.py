@@ -1,3 +1,5 @@
+import datetime
+import hashlib
 import math
 from typing import Dict, List, Optional, Union
 
@@ -30,16 +32,48 @@ from app.schema import (
     ToolChoice,
 )
 
+REASONING_MODELS = [
+    "o1",
+    "o3-mini",
+    "openai/o3",
+    "openai/o4-mini-high",
+    "anthropic/claude-3.7-sonnet:beta",
+    "anthropic/claude-3.7-sonnet:thinking",
+    "gemini-2.5-pro-exp-03-25",
+    "gemini-2.5-pro-preview-03-25",
+    "google/gemini-2.5-pro-exp-03-25:free",
+    "google/gemini-2.5-pro-preview-03-25",
+    "google/gemini-2.5-flash-preview:thinking",
+]
 
-REASONING_MODELS = ["o1", "o3-mini"]
 MULTIMODAL_MODELS = [
     "gpt-4-vision-preview",
     "gpt-4o",
     "gpt-4o-mini",
+    "openai/gpt-4.1-nano",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1",
+    "openai/o3",
+    "openai/o4-mini-high",
     "claude-3-opus-20240229",
     "claude-3-sonnet-20240229",
     "claude-3-haiku-20240307",
+    "anthropic/claude-3.7-sonnet:beta",
+    "anthropic/claude-3.7-sonnet:thinking",
+    "anthropic/claude-3.7-sonnet",
+    "gemini-2.5-pro-exp-03-25",
+    "gemini-2.5-pro-preview-03-25",
+    "google/gemini-2.5-pro-exp-03-25:free",
+    "google/gemini-2.0-flash-exp:free",
+    "google/gemini-2.5-pro-preview-03-25",
+    "google/gemini-2.5-flash-preview",
+    "google/gemini-2.5-flash-preview:thinking",
+    "openrouter/optimus-alpha",
 ]
+
+# FIXME(Loic): This is a hack to make the images output folder unique for each query
+#              (only when program will quit each time)
+CURRENT_TIME = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
 
 
 class TokenCounter:
@@ -193,82 +227,220 @@ class LLM:
     def __init__(
         self, config_name: str = "default", llm_config: Optional[LLMSettings] = None
     ):
-        if not hasattr(self, "client"):  # Only initialize if not already initialized
-            llm_config = llm_config or config.llm
-            llm_config = llm_config.get(config_name, llm_config["default"])
-            self.model = llm_config.model
-            self.max_tokens = llm_config.max_tokens
-            self.temperature = llm_config.temperature
-            self.api_type = llm_config.api_type
-            self.api_key = llm_config.api_key
-            self.api_version = llm_config.api_version
-            self.base_url = llm_config.base_url
+        if not hasattr(self, "clients"):  # Only initialize if not already initialized
+            # Initialize clients dictionary
+            self.clients = {}
 
-            # Add token counting related attributes
-            self.total_input_tokens = 0
-            self.total_completion_tokens = 0
-            self.max_input_tokens = (
-                llm_config.max_input_tokens
-                if hasattr(llm_config, "max_input_tokens")
-                else None
-            )
+            llm_configs = llm_config or config.llm
 
-            # Initialize tokenizer
-            try:
-                self.tokenizer = tiktoken.encoding_for_model(self.model)
-            except KeyError:
-                # If the model is not in tiktoken's presets, use cl100k_base as default
-                self.tokenizer = tiktoken.get_encoding("cl100k_base")
+            # Ensure default config exists
+            if "default" not in llm_configs:
+                raise ValueError("Configuration must contain a 'default' entry")
 
-            if self.api_type == "azure":
-                self.client = AsyncAzureOpenAI(
-                    base_url=self.base_url,
-                    api_key=self.api_key,
-                    api_version=self.api_version,
+            # Initialize clients_info dictionary to store all configuration related data
+            self.clients_info = {}
+
+            # Initialize clients and token counters for all configurations
+            for name, cfg in llm_configs.items():
+                # Initialize client info dictionary for this config
+                self.clients_info[name] = {
+                    "total_input_tokens": 0,
+                    "total_completion_tokens": 0,
+                    "max_input_tokens": (
+                        cfg.max_input_tokens
+                        if hasattr(cfg, "max_input_tokens")
+                        else None
+                    ),
+                }
+
+                # Initialize tokenizer for this config
+                try:
+                    tokenizer = tiktoken.encoding_for_model(cfg.model)
+                except KeyError:
+                    # If the model is not in tiktoken's presets, use cl100k_base as default
+                    tokenizer = tiktoken.get_encoding("cl100k_base")
+
+                self.clients_info[name]["tokenizer"] = tokenizer
+                self.clients_info[name]["token_counter"] = TokenCounter(tokenizer)
+
+                # Create client for this config
+                if self._create_client(name, cfg):
+                    logger.debug(f"Initialized LLM client for config: {name}")
+
+            # Set default token counter for backward compatibility
+            self.token_counter = self.clients_info["default"]["token_counter"]
+
+    def _create_client(self, name: str, llm_config: LLMSettings) -> bool:
+        """Create a client for the given configuration
+
+        Args:
+            name: Configuration name
+            llm_config: LLM configuration
+
+        Returns:
+            bool: True if client was created successfully, False otherwise
+        """
+        try:
+            if llm_config.api_type == "azure":
+                self.clients[name] = AsyncAzureOpenAI(
+                    base_url=llm_config.base_url,
+                    api_key=llm_config.api_key,
+                    api_version=llm_config.api_version,
                 )
-            elif self.api_type == "aws":
-                self.client = BedrockClient()
+            elif llm_config.api_type == "aws":
+                self.clients[name] = BedrockClient()
             else:
-                self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+                self.clients[name] = AsyncOpenAI(
+                    api_key=llm_config.api_key, base_url=llm_config.base_url
+                )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM client for config {name}: {e}")
+            return False
 
-            self.token_counter = TokenCounter(self.tokenizer)
-
-    def count_tokens(self, text: str) -> int:
+    def count_tokens(self, text: str, config_name: str = "default") -> int:
         """Calculate the number of tokens in a text"""
         if not text:
             return 0
-        return len(self.tokenizer.encode(text))
+        return len(self.clients_info[config_name]["tokenizer"].encode(text))
 
-    def count_message_tokens(self, messages: List[dict]) -> int:
-        return self.token_counter.count_message_tokens(messages)
-
-    def update_token_count(self, input_tokens: int, completion_tokens: int = 0) -> None:
-        """Update token counts"""
-        # Only track tokens if max_input_tokens is set
-        self.total_input_tokens += input_tokens
-        self.total_completion_tokens += completion_tokens
-        logger.info(
-            f"Token usage: Input={input_tokens}, Completion={completion_tokens}, "
-            f"Cumulative Input={self.total_input_tokens}, Cumulative Completion={self.total_completion_tokens}, "
-            f"Total={input_tokens + completion_tokens}, Cumulative Total={self.total_input_tokens + self.total_completion_tokens}"
+    def count_message_tokens(
+        self, messages: List[dict], config_name: str = "default"
+    ) -> int:
+        return self.clients_info[config_name]["token_counter"].count_message_tokens(
+            messages
         )
 
-    def check_token_limit(self, input_tokens: int) -> bool:
-        """Check if token limits are exceeded"""
-        if self.max_input_tokens is not None:
-            return (self.total_input_tokens + input_tokens) <= self.max_input_tokens
-        # If max_input_tokens is not set, always return True
+    def update_token_count(
+        self,
+        input_tokens: int,
+        completion_tokens: int = 0,
+        config_name: str = "default",
+    ) -> None:
+        """Update token counts for the specified configuration"""
+        # Only track tokens if max_input_tokens is set for this config
+        client_info = self.clients_info[config_name]
+        client_info["total_input_tokens"] += input_tokens
+        client_info["total_completion_tokens"] += completion_tokens
+        logger.info(
+            f"Token usage for {config_name}: Input={input_tokens}, Completion={completion_tokens}, "
+            f"Cumulative Input={client_info['total_input_tokens']}, "
+            f"Cumulative Completion={client_info['total_completion_tokens']}, "
+            f"Total={input_tokens + completion_tokens}, "
+            f"Cumulative Total={client_info['total_input_tokens'] + client_info['total_completion_tokens']}"
+        )
+
+    def check_token_limit(
+        self, input_tokens: int, config_name: str = "default"
+    ) -> bool:
+        """Check if token limits are exceeded for the specified configuration"""
+        client_info = self.clients_info[config_name]
+        max_tokens = client_info["max_input_tokens"]
+        if max_tokens is not None:
+            return client_info["total_input_tokens"] + input_tokens <= max_tokens
+        # If max_input_tokens is not set for this config, always return True
         return True
 
-    def get_limit_error_message(self, input_tokens: int) -> str:
-        """Generate error message for token limit exceeded"""
+    def get_limit_error_message(
+        self, input_tokens: int, config_name: str = "default"
+    ) -> str:
+        """Generate error message for token limit exceeded for the specified configuration"""
+        client_info = self.clients_info[config_name]
+        max_tokens = client_info["max_input_tokens"]
         if (
-            self.max_input_tokens is not None
-            and (self.total_input_tokens + input_tokens) > self.max_input_tokens
+            max_tokens is not None
+            and (client_info["total_input_tokens"] + input_tokens) > max_tokens
         ):
-            return f"Request may exceed input token limit (Current: {self.total_input_tokens}, Needed: {input_tokens}, Max: {self.max_input_tokens})"
+            return f"Request may exceed input token limit for {config_name} (Current: {client_info['total_input_tokens']}, Needed: {input_tokens}, Max: {max_tokens})"
 
         return "Token limit exceeded"
+
+    async def _handle_rate_limit_error(self, response):
+        """Handle rate limit errors with appropriate backoff strategy
+
+        Args:
+            response: The response object from OpenAI API
+
+        This method implements backoff strategies based on the error response:
+        1. If retryDelay is present in the response, sleep for that duration
+        2. If X-RateLimit-Reset is present in headers, sleep until that timestamp
+        3. Otherwise, just let the tenacity retry mechanism handle it
+
+        Returns:
+            bool: True if rate limit was detected and handled, False otherwise
+        """
+        try:
+            import asyncio
+            import json
+            from datetime import datetime
+
+            # Also check if this is a direct ChatCompletion with error
+            if hasattr(response, "error"):
+                error_obj = getattr(response, "error", {})
+                if isinstance(error_obj, dict) and error_obj.get("code", 0) == 429:
+                    metadata = error_obj.get("metadata", {})
+                    provider_name = metadata.get("provider_name", "")
+                    logger.info(f"Rate limit detected from provider: {provider_name}")
+                    logger.debug(f"Rate limit error details: {error_obj}")
+
+                    # Case 1: Check for retryDelay in raw response (Google AI Studio format)
+                    if "raw" in metadata:
+                        try:
+                            raw_data = json.loads(metadata["raw"])
+                            retry_info = None
+
+                            # Navigate through Google AI Studio error structure
+                            if "error" in raw_data and "details" in raw_data["error"]:
+                                for detail in raw_data["error"]["details"]:
+                                    if (
+                                        detail.get("@type", "")
+                                        == "type.googleapis.com/google.rpc.RetryInfo"
+                                    ):
+                                        retry_info = detail
+                                        break
+
+                            if retry_info and "retryDelay" in retry_info:
+                                delay_str = retry_info["retryDelay"]
+                                # Convert "50s" to seconds
+                                delay_seconds = int(delay_str.rstrip("s"))
+                                logger.info(
+                                    f"Rate limit hit. Backing off for {delay_seconds} seconds as specified by provider."
+                                )
+                                await asyncio.sleep(delay_seconds)
+                                return True
+                        except (json.JSONDecodeError, KeyError) as e:
+                            logger.warning(
+                                f"Failed to parse retry delay from response: {e}"
+                            )
+
+                    # Case 2: Check for X-RateLimit-Reset in headers
+                    if (
+                        "headers" in metadata
+                        and "X-RateLimit-Reset" in metadata["headers"]
+                    ):
+                        reset_timestamp = (
+                            int(metadata["headers"]["X-RateLimit-Reset"]) / 1000
+                        )  # Convert from milliseconds
+                        current_time = datetime.now().timestamp()
+                        wait_seconds = max(0, reset_timestamp - current_time)
+
+                        if wait_seconds > 0:
+                            logger.info(
+                                f"Rate limit hit. Waiting until reset time: {datetime.fromtimestamp(reset_timestamp).isoformat()} ({wait_seconds:.2f}s)"
+                            )
+                            await asyncio.sleep(wait_seconds)
+                            return True
+                        else:
+                            logger.info(
+                                f"Rate limit reset time already passed. Proceeding with retry."
+                            )
+                    return True
+
+            return False
+        except Exception as e:
+            logger.warning(f"Error in rate limit backoff handling: {e}")
+            # Continue with normal retry mechanism
+            return False
 
     @staticmethod
     def format_messages(
@@ -296,6 +468,11 @@ class LLM:
             ... ]
             >>> formatted = LLM.format_messages(msgs)
         """
+        import base64
+        import os
+        import uuid
+        from pathlib import Path
+
         formatted_messages = []
 
         for message in messages:
@@ -310,6 +487,30 @@ class LLM:
 
                 # Process base64 images if present and model supports images
                 if supports_images and message.get("base64_image"):
+                    # Generate a unique ID for the image, use MD5 for dedup
+                    image_id = hashlib.md5(
+                        str(message["base64_image"]).encode("utf-8")
+                    ).hexdigest()
+                    logger.debug(f"Processing image with ID: {image_id}")
+
+                    # Save the image to local file for debugging
+                    try:
+                        # Create images directory if it doesn't exist
+                        images_dir = Path(
+                            os.path.join(os.getcwd(), "images", CURRENT_TIME)
+                        )
+                        images_dir.mkdir(exist_ok=True, parents=True)
+
+                        # Decode the image and save it to file
+                        image_data = base64.b64decode(message["base64_image"])
+                        image_path = images_dir / f"{image_id}.jpg"
+                        if not os.path.exists(image_path):
+                            with open(image_path, "wb") as f:
+                                f.write(image_data)
+                            logger.debug(f"Saved image to {image_path}")
+                    except Exception as e:
+                        logger.error(f"Failed to save debug image: {e}")
+
                     # Initialize or convert content to appropriate format
                     if not message.get("content"):
                         message["content"] = []
@@ -344,6 +545,7 @@ class LLM:
                 elif not supports_images and message.get("base64_image"):
                     # Just remove the base64_image field and keep the text content
                     del message["base64_image"]
+                    logger.debug("Base64 image ignored as model doesn't support it")
 
                 if "content" in message or "tool_calls" in message:
                     formatted_messages.append(message)
@@ -371,6 +573,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = True,
         temperature: Optional[float] = None,
+        name: str = "default",
     ) -> str:
         """
         Send a prompt to the LLM and get the response.
@@ -391,8 +594,20 @@ class LLM:
             Exception: For unexpected errors
         """
         try:
+            # Get config for the specified name or fall back to default
+            llm_configs = config.llm
+            cfg = llm_configs.get(name, llm_configs["default"])
+            model = cfg.model
+            max_tokens = cfg.max_tokens
+            temp = temperature if temperature is not None else cfg.temperature
+
+            # Log request parameters
+            logger.debug(
+                f"LLM.ask called with: model={model}, stream={stream}, temperature={temp}"
+            )
+
             # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+            supports_images = model in MULTIMODAL_MODELS
 
             # Format system and user messages with image support check
             if system_msgs:
@@ -402,60 +617,100 @@ class LLM:
                 messages = self.format_messages(messages, supports_images)
 
             # Calculate input token count
-            input_tokens = self.count_message_tokens(messages)
+            input_tokens = self.count_message_tokens(messages, name)
+            logger.debug(f"Input token count: {input_tokens}")
 
             # Check if token limits are exceeded
-            if not self.check_token_limit(input_tokens):
-                error_message = self.get_limit_error_message(input_tokens)
+            if not self.check_token_limit(input_tokens, name):
+                error_message = self.get_limit_error_message(input_tokens, name)
+                logger.debug(f"Token limit exceeded: {error_message}")
                 # Raise a special exception that won't be retried
                 raise TokenLimitExceeded(error_message)
 
             params = {
-                "model": self.model,
+                "model": model,
                 "messages": messages,
             }
 
-            if self.model in REASONING_MODELS:
-                params["max_completion_tokens"] = self.max_tokens
+            if model in REASONING_MODELS:
+                params["max_completion_tokens"] = max_tokens
             else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
+                params["max_tokens"] = max_tokens
+                params["temperature"] = temp
+
+            logger.debug(f"LLM request parameters: {params}")
+
+            # Get the client for the specified configuration
+            client = self.clients.get(name)
+            if not client:
+                logger.warning(f"Client for config '{name}' not found, using default")
+                client = self.clients.get("default") or next(
+                    iter(self.clients.values())
                 )
 
             if not stream:
                 # Non-streaming request
-                response = await self.client.chat.completions.create(
-                    **params, stream=False
-                )
+                response = await client.chat.completions.create(**params, stream=False)
 
                 if not response.choices or not response.choices[0].message.content:
+                    # Check if response contains rate limit error despite normal format
+                    rate_limited = await self._handle_rate_limit_error(response)
+                    if rate_limited:
+                        raise RateLimitError(
+                            "Rate limit hit during non-streaming request"
+                        )
                     raise ValueError("Empty or invalid response from LLM")
+
+                # Log response
+                logger.debug(f"LLM response: {response}")
 
                 # Update token counts
                 self.update_token_count(
-                    response.usage.prompt_tokens, response.usage.completion_tokens
+                    response.usage.prompt_tokens, response.usage.completion_tokens, name
                 )
 
                 return response.choices[0].message.content
 
             # Streaming request, For streaming, update estimated token count before making the request
-            self.update_token_count(input_tokens)
+            self.update_token_count(input_tokens, config_name=name)
 
-            response = await self.client.chat.completions.create(**params, stream=True)
+            # Get the client for the specified configuration
+            client = self.clients.get(name)
+            if not client:
+                logger.warning(f"Client for config '{name}' not found, using default")
+                client = self.clients.get("default") or next(
+                    iter(self.clients.values())
+                )
+
+            response = await client.chat.completions.create(**params, stream=True)
 
             collected_messages = []
             completion_text = ""
-            async for chunk in response:
-                chunk_message = chunk.choices[0].delta.content or ""
-                collected_messages.append(chunk_message)
-                completion_text += chunk_message
-                print(chunk_message, end="", flush=True)
+            try:
+                async for chunk in response:
+                    # Check if chunk contains rate limit error
+                    if not chunk.choices or not chunk.choices[0].delta.content:
+                        rate_limited = await self._handle_rate_limit_error(chunk)
+                        if rate_limited:
+                            raise RateLimitError(
+                                "Rate limit hit during streaming request"
+                            )
+
+                    chunk_message = chunk.choices[0].delta.content or ""
+                    collected_messages.append(chunk_message)
+                    completion_text += chunk_message
+                    print(chunk_message, end="", flush=True)
+            except Exception as e:
+                logger.error(f"Error during streaming: {e}")
+                raise
 
             print()  # Newline after streaming
             full_response = "".join(collected_messages).strip()
             if not full_response:
                 raise ValueError("Empty response from streaming LLM")
+
+            # Log full response
+            logger.debug(f"Full streaming response: {full_response}")
 
             # estimate completion tokens for streaming response
             completion_tokens = self.count_tokens(completion_text)
@@ -499,6 +754,7 @@ class LLM:
         system_msgs: Optional[List[Union[dict, Message]]] = None,
         stream: bool = False,
         temperature: Optional[float] = None,
+        name: str = "default",
     ) -> str:
         """
         Send a prompt with images to the LLM and get the response.
@@ -520,11 +776,25 @@ class LLM:
             Exception: For unexpected errors
         """
         try:
+            # Get config for the specified name or fall back to default
+            llm_configs = config.llm
+            cfg = llm_configs.get(name, llm_configs["default"])
+            model = cfg.model
+            max_tokens = cfg.max_tokens
+            temp = temperature if temperature is not None else cfg.temperature
+
+            # Log request parameters
+            logger.debug(
+                f"LLM.ask_with_images called with: model={model}, stream={stream}, "
+                f"temperature={temp}, "
+                f"images_count={len(images)}"
+            )
+
             # For ask_with_images, we always set supports_images to True because
             # this method should only be called with models that support images
-            if self.model not in MULTIMODAL_MODELS:
+            if model not in MULTIMODAL_MODELS:
                 raise ValueError(
-                    f"Model {self.model} does not support images. Use a model from {MULTIMODAL_MODELS}"
+                    f"Model {model} does not support images. Use a model from {MULTIMODAL_MODELS}"
                 )
 
             # Format messages with image support
@@ -544,9 +814,7 @@ class LLM:
             multimodal_content = (
                 [{"type": "text", "text": content}]
                 if isinstance(content, str)
-                else content
-                if isinstance(content, list)
-                else []
+                else content if isinstance(content, list) else []
             )
 
             # Add images to content
@@ -564,6 +832,9 @@ class LLM:
 
             # Update the message with multimodal content
             last_message["content"] = multimodal_content
+            logger.debug(
+                f"Updated last message with {len(multimodal_content)} multimodal content items"
+            )
 
             # Add system messages if provided
             if system_msgs:
@@ -573,44 +844,90 @@ class LLM:
                 )
             else:
                 all_messages = formatted_messages
+            logger.debug(
+                f"Final message count for LLM request with images: {len(all_messages)}"
+            )
 
             # Calculate tokens and check limits
-            input_tokens = self.count_message_tokens(all_messages)
-            if not self.check_token_limit(input_tokens):
-                raise TokenLimitExceeded(self.get_limit_error_message(input_tokens))
+            input_tokens = self.count_message_tokens(all_messages, name)
+            logger.debug(f"Input token count for request with images: {input_tokens}")
+            if not self.check_token_limit(input_tokens, name):
+                error_message = self.get_limit_error_message(input_tokens, name)
+                logger.debug(f"Token limit exceeded: {error_message}")
+                raise TokenLimitExceeded(error_message)
 
             # Set up API parameters
             params = {
-                "model": self.model,
+                "model": model,
                 "messages": all_messages,
                 "stream": stream,
             }
+            logger.debug(f"LLM request parameters for images: {params}")
 
             # Add model-specific parameters
-            if self.model in REASONING_MODELS:
-                params["max_completion_tokens"] = self.max_tokens
+            if model in REASONING_MODELS:
+                params["max_completion_tokens"] = max_tokens
             else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
-                )
+                params["max_tokens"] = max_tokens
+                params["temperature"] = temp
 
             # Handle non-streaming request
             if not stream:
-                response = await self.client.chat.completions.create(**params)
+                # Get the client for the specified configuration
+                client = self.clients.get(name)
+                if not client:
+                    logger.warning(
+                        f"Client for config '{name}' not found, using default"
+                    )
+                    client = self.clients.get("default") or next(
+                        iter(self.clients.values())
+                    )
+
+                response = await client.chat.completions.create(**params)
+                logger.debug(f"LLM response for images (non-streaming): {response}")
 
                 if not response.choices or not response.choices[0].message.content:
+                    # Check if response contains rate limit error despite normal format
+                    rate_limited = await self._handle_rate_limit_error(response)
+                    if rate_limited:
+                        raise RateLimitError(
+                            "Rate limit hit during non-streaming request"
+                        )
+                    logger.error("Empty or invalid response from LLM for image request")
                     raise ValueError("Empty or invalid response from LLM")
 
-                self.update_token_count(response.usage.prompt_tokens)
+                # Update token counts
+                self.update_token_count(
+                    response.usage.prompt_tokens, response.usage.completion_tokens, name
+                )
+                logger.debug(
+                    f"Token usage for image request: {response.usage.prompt_tokens} input, {response.usage.completion_tokens} completion"
+                )
                 return response.choices[0].message.content
 
             # Handle streaming request
-            self.update_token_count(input_tokens)
-            response = await self.client.chat.completions.create(**params)
+            self.update_token_count(input_tokens, config_name=name)
+            logger.debug(
+                f"Starting streaming request with images, estimated input tokens: {input_tokens}"
+            )
+            # Get the client for the specified configuration
+            client = self.clients.get(name)
+            if not client:
+                logger.warning(f"Client for config '{name}' not found, using default")
+                client = self.clients.get("default") or next(
+                    iter(self.clients.values())
+                )
+
+            response = await client.chat.completions.create(**params)
 
             collected_messages = []
             async for chunk in response:
+                if not chunk.choices or not chunk.choices[0].delta.content:
+                    # Check if chunk contains rate limit error
+                    rate_limited = await self._handle_rate_limit_error(chunk)
+                    if rate_limited:
+                        raise RateLimitError("Rate limit hit during streaming request")
+
                 chunk_message = chunk.choices[0].delta.content or ""
                 collected_messages.append(chunk_message)
                 print(chunk_message, end="", flush=True)
@@ -618,8 +935,19 @@ class LLM:
             print()  # Newline after streaming
             full_response = "".join(collected_messages).strip()
 
+            # Log full response
+            logger.debug(f"Full streaming response with images: {full_response}")
+
             if not full_response:
+                logger.error("Empty response from streaming LLM with images")
                 raise ValueError("Empty response from streaming LLM")
+
+            # estimate completion tokens for streaming response
+            completion_tokens = self.count_tokens(full_response, name)
+            logger.info(
+                f"Estimated completion tokens for streaming image response: {completion_tokens}"
+            )
+            self.total_completion_tokens += completion_tokens
 
             return full_response
 
@@ -656,6 +984,7 @@ class LLM:
         tools: Optional[List[dict]] = None,
         tool_choice: TOOL_CHOICE_TYPE = ToolChoice.AUTO,  # type: ignore
         temperature: Optional[float] = None,
+        name: str = "default",
         **kwargs,
     ) -> ChatCompletionMessage | None:
         """
@@ -680,15 +1009,31 @@ class LLM:
             Exception: For unexpected errors
         """
         try:
+            # Get config for the specified name or fall back to default
+            llm_configs = config.llm
+            cfg = llm_configs.get(name, llm_configs["default"])
+            model = cfg.model
+            max_tokens = cfg.max_tokens
+            temp = temperature if temperature is not None else cfg.temperature
+
+            # Log request parameters
+            logger.debug(
+                f"LLM.ask_tool called with: model={model}, timeout={timeout}, "
+                f"tool_choice={tool_choice}, temperature={temp}, "
+                f"tools_count={len(tools) if tools else 0}"
+            )
             # Validate tool_choice
             if tool_choice not in TOOL_CHOICE_VALUES:
+                logger.error(f"Invalid tool_choice: {tool_choice}")
                 raise ValueError(f"Invalid tool_choice: {tool_choice}")
 
             # Check if the model supports images
-            supports_images = self.model in MULTIMODAL_MODELS
+            supports_images = model in MULTIMODAL_MODELS
+            logger.debug(f"Model {model} supports images: {supports_images}")
 
             # Format messages
             if system_msgs:
+                logger.debug(f"System messages provided: {system_msgs}")
                 system_msgs = self.format_messages(system_msgs, supports_images)
                 messages = system_msgs + self.format_messages(messages, supports_images)
             else:
@@ -696,18 +1041,22 @@ class LLM:
 
             # Calculate input token count
             input_tokens = self.count_message_tokens(messages)
+            logger.debug(f"Input token count for messages: {input_tokens}")
 
             # If there are tools, calculate token count for tool descriptions
             tools_tokens = 0
             if tools:
                 for tool in tools:
                     tools_tokens += self.count_tokens(str(tool))
+                logger.debug(f"Additional tokens for tools: {tools_tokens}")
 
             input_tokens += tools_tokens
+            logger.debug(f"Total input token count for tool request: {input_tokens}")
 
             # Check if token limits are exceeded
             if not self.check_token_limit(input_tokens):
                 error_message = self.get_limit_error_message(input_tokens)
+                logger.debug(f"Token limit exceeded: {error_message}")
                 # Raise a special exception that won't be retried
                 raise TokenLimitExceeded(error_message)
 
@@ -715,40 +1064,65 @@ class LLM:
             if tools:
                 for tool in tools:
                     if not isinstance(tool, dict) or "type" not in tool:
+                        logger.error(f"Invalid tool format: {tool}")
                         raise ValueError("Each tool must be a dict with 'type' field")
+                logger.debug(f"Validated {len(tools)} tools for request")
 
             # Set up the completion request
             params = {
-                "model": self.model,
+                "model": model,
                 "messages": messages,
                 "tools": tools,
                 "tool_choice": tool_choice,
                 "timeout": timeout,
                 **kwargs,
             }
+            logger.debug(f"LLM tool request parameters: {params}")
 
-            if self.model in REASONING_MODELS:
-                params["max_completion_tokens"] = self.max_tokens
+            if model in REASONING_MODELS:
+                params["max_completion_tokens"] = max_tokens
             else:
-                params["max_tokens"] = self.max_tokens
-                params["temperature"] = (
-                    temperature if temperature is not None else self.temperature
-                )
+                params["max_tokens"] = max_tokens
+                params["temperature"] = temp
 
             params["stream"] = False  # Always use non-streaming for tool requests
-            response: ChatCompletion = await self.client.chat.completions.create(
-                **params
-            )
+            logger.debug("Sending tool request to LLM API")
+            # Get the client for the specified configuration
+            client = self.clients.get(name)
+            if not client:
+                logger.warning(f"Client for config '{name}' not found, using default")
+                client = self.clients.get("default") or next(
+                    iter(self.clients.values())
+                )
+
+            response: ChatCompletion = await client.chat.completions.create(**params)
+            logger.debug(f"LLM tool response received: {response}")
 
             # Check if response is valid
             if not response.choices or not response.choices[0].message:
-                print(response)
-                # raise ValueError("Invalid or empty response from LLM")
-                return None
+                # Check if response contains rate limit error despite normal format
+                rate_limited = await self._handle_rate_limit_error(response)
+                if rate_limited:
+                    raise RateLimitError("Rate limit hit during tool request")
+
+                logger.error(f"Invalid or empty response from LLM: {response}")
+                # print(response)
+                raise ValueError("Invalid or empty response from LLM")
+                # return None
+
+            if (
+                not response.choices[0].message.content
+                and not response.choices[0].message.tool_calls
+            ):
+                logger.error(f"No content nor tool_calls found in response")
+                raise ValueError("No content nor tool_calls found in response")
 
             # Update token counts
             self.update_token_count(
                 response.usage.prompt_tokens, response.usage.completion_tokens
+            )
+            logger.debug(
+                f"Token usage for tool request: {response.usage.prompt_tokens} input, {response.usage.completion_tokens} completion"
             )
 
             return response.choices[0].message
