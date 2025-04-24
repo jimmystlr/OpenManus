@@ -44,7 +44,8 @@ class DeepResearchItem(BaseModel):
 
     def __str__(self):
         reasoning_str = self.reasoning if self.reasoning else ''
-        citations_str = "\n".join(str(c) for c in self.citations) if self.citations else "None"
+        citations_str = "\n".join(f"[{i+1}]{str(c)}"
+                                  for i, c in enumerate(self.citations)) if self.citations else "None"
         return f"Reasoning:\n{reasoning_str}\n\nContent:\n{self.content}\n\nCitations:\n{citations_str}"
 
 

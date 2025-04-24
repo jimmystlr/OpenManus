@@ -3,7 +3,7 @@
 
 """PerplexityDeepResearchEngine
 
-The builtin implementation of deepresearch engine
+The perplexity implementation of deep research engine
 """
 
 import asyncio
@@ -91,7 +91,10 @@ class PerplexityDeepResearchEngine(DeepResearchEngine):
 
 if __name__ == "__main__":
     deep_research = PerplexityDeepResearchEngine()
+    # result = deep_research.research(
+    #     query="What is deep learning", timeout=600
+    # )
     result = deep_research.research(
-        query="What is deep learning", timeout=600
+        query="Analyze the Instagram profile @Sarah.FitLife_ (Sarah Dussault). Focus on content themes, style, tone, audience demographics, engagement patterns, and any previous supplement/nutrition brand collaborations."
     )
     print(result)

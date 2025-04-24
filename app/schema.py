@@ -162,7 +162,7 @@ class Memory(BaseModel):
     # FIXME(Loic): Make it more configurable and robust but not fixed,
     #              might be changed to upload files first and use file path instead
     image_messages: List[Message] = Field(default_factory=list)
-    max_image_messages: int = Field(default=3)
+    max_image_messages: int = Field(default=1)
 
     def add_message(self, message: Message) -> None:
         """Add a message to memory"""

@@ -136,29 +136,29 @@ class Bash(BaseTool):
 
     _session: Optional[_BashSession] = None
 
-    # 定义危险命令关键字列表
+    # Define the dangerous command list
     _DANGEROUS_COMMANDS = [
-        r"\brm\b",  # 删除文件
-        r"\bsudo\b",  # 超级用户权限
-        r"\.\.(?:/|\\\\",  # 访问上级目录
-        r"\bmkfs\b",  # 格式化文件系统
-        r"\bdd\b",  # 磁盘操作
-        r"\bchmod\b",  # 修改权限
-        r"\bmv\b",  # 移动文件
-        r">/dev",  # 写入设备文件
-        r"2>/dev",  # 写入设备文件
-        r"\bkill\b",  # 终止进程
-        r"\bpkill\b",  # 终止进程
-        r"\bwget\b",  # 下载文件
-        r"\bcurl\b.*\b-o\b",  # 下载文件并输出
-        r"\bchown\b",  # 修改所有者
-        r"\bexport\b",  # 设置环境变量
-        r"\bsource\b",  # 执行脚本
-        r"\beval\b",  # 执行字符串命令
+        r"\brm\b",  # delete files
+        r"\bsudo\b",  # superuser privileges
+        r"\.\.(?:/|\\\\",  # access parent directory
+        r"\bmkfs\b",  # format file system
+        r"\bdd\b",  # disk operations
+        r"\bchmod\b",  # change permissions
+        r"\bmv\b",  # move files
+        r">/dev",  # write to device file
+        r"2>/dev",  # write to device file
+        r"\bkill\b",  # terminate process
+        r"\bpkill\b",  # terminate process
+        r"\bwget\b",  # download files
+        r"\bcurl\b.*\b-o\b",  # download files and output
+        r"\bchown\b",  # change ownership
+        r"\bexport\b",  # set environment variables
+        r"\bsource\b",  # execute script
+        r"\beval\b",  # evaluate and execute string as command
     ]
 
     def _is_dangerous_command(self, command: str) -> bool:
-        """检查命令是否包含危险操作"""
+        """ Dangerous operation detection """
         if not command:
             return False
 
@@ -184,25 +184,20 @@ class Bash(BaseTool):
             await self._session.start()
 
         if command is not None:
-            # 检查是否为危险命令
             if self._is_dangerous_command(command):
-                # 创建用户控制工具实例
+                # Ask for user confirmation
                 user_control = UserControlTool()
-                # 请求用户确认
                 result = await user_control.execute(
-                    message=f"检测到潜在危险命令: '{command}'\n是否继续执行? (yes/no, 默认为yes)",
+                    message=f"Dangerous command detected: '{command}'\nConfirm to proceed? (yes/no, default is no)",
                     timeout=60,
-                    default_action="continue",
+                    default_action="abort",
                 )
 
-                # 获取用户输入
                 user_input = str(result).strip().lower()
+                if user_input != "yes":
+                    return CLIResult(system="The command execution is cancelled.")
 
-                # 如果用户拒绝执行或明确输入no
-                if user_input == "no":
-                    return CLIResult(system="命令已被用户取消执行。")
-
-            # 执行命令
+            # Execute the command
             return await self._session.run(command)
 
         raise ToolError("no command provided.")

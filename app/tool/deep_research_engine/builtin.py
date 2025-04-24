@@ -576,7 +576,10 @@ class BuiltinDeepResearchEngine(DeepResearchEngine):
 
 if __name__ == "__main__":
     deep_research = BuiltinDeepResearchEngine()
+    # result = deep_research.research(
+    #     query="What is deep learning", max_depth=1, results_per_search=2
+    # )
     result = deep_research.research(
-        query="What is deep learning", max_depth=1, results_per_search=2
-    )
+        query="Investigate FitFuel Nutrition USA: brand philosophy, core values, market positioning, target audience, and overall reputation.",
+        max_insights=10)
     print(result)

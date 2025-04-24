@@ -33,6 +33,7 @@ setup(
         "aiofiles~=24.1.0",
         "pydantic_core>=2.27.2,<2.28.0",
         "colorama~=0.4.6",
+        "prompt_toolkit~=3.0.51",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

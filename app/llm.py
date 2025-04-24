@@ -295,7 +295,7 @@ class LLM:
                 )
             return True
         except Exception as e:
-            logger.error(f"Failed to initialize LLM client for config {name}: {e}")
+            logger.exception(f"Failed to initialize LLM client for config {name}: {e}")
             return False
 
     def count_tokens(self, text: str, config_name: str = "default") -> int:
@@ -509,7 +509,7 @@ class LLM:
                                 f.write(image_data)
                             logger.debug(f"Saved image to {image_path}")
                     except Exception as e:
-                        logger.error(f"Failed to save debug image: {e}")
+                        logger.exception(f"Failed to save debug image: {e}")
 
                     # Initialize or convert content to appropriate format
                     if not message.get("content"):
@@ -701,7 +701,7 @@ class LLM:
                     completion_text += chunk_message
                     print(chunk_message, end="", flush=True)
             except Exception as e:
-                logger.error(f"Error during streaming: {e}")
+                logger.exception(f"Error during streaming: {e}")
                 raise
 
             print()  # Newline after streaming
@@ -730,11 +730,11 @@ class LLM:
         except OpenAIError as oe:
             logger.exception(f"OpenAI API error")
             if isinstance(oe, AuthenticationError):
-                logger.error("Authentication failed. Check API key.")
+                logger.exception("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                logger.exception("Rate limit exceeded. Consider increasing retry attempts.")
             elif isinstance(oe, APIError):
-                logger.error(f"API error: {oe}")
+                logger.exception(f"API error: {oe}")
             raise
         except Exception:
             logger.exception(f"Unexpected error in ask")
@@ -893,7 +893,7 @@ class LLM:
                         raise RateLimitError(
                             "Rate limit hit during non-streaming request"
                         )
-                    logger.error("Empty or invalid response from LLM for image request")
+                    logger.exception("Empty or invalid response from LLM for image request")
                     raise ValueError("Empty or invalid response from LLM")
 
                 # Update token counts
@@ -954,19 +954,19 @@ class LLM:
         except TokenLimitExceeded:
             raise
         except ValueError as ve:
-            logger.error(f"Validation error in ask_with_images: {ve}")
+            logger.exception(f"Validation error in ask_with_images: {ve}")
             raise
         except OpenAIError as oe:
-            logger.error(f"OpenAI API error: {oe}")
+            logger.exception(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
-                logger.error("Authentication failed. Check API key.")
+                logger.exception("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                logger.exception("Rate limit exceeded. Consider increasing retry attempts.")
             elif isinstance(oe, APIError):
-                logger.error(f"API error: {oe}")
+                logger.exception(f"API error: {oe}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in ask_with_images: {e}")
+            logger.exception(f"Unexpected error in ask_with_images: {e}")
             raise
 
     @retry(
@@ -1131,17 +1131,17 @@ class LLM:
             # Re-raise token limit errors without logging
             raise
         except ValueError as ve:
-            logger.error(f"Validation error in ask_tool: {ve}")
+            logger.exception(f"Validation error in ask_tool: {ve}")
             raise
         except OpenAIError as oe:
-            logger.error(f"OpenAI API error: {oe}")
+            logger.exception(f"OpenAI API error: {oe}")
             if isinstance(oe, AuthenticationError):
-                logger.error("Authentication failed. Check API key.")
+                logger.exception("Authentication failed. Check API key.")
             elif isinstance(oe, RateLimitError):
-                logger.error("Rate limit exceeded. Consider increasing retry attempts.")
+                logger.exception("Rate limit exceeded. Consider increasing retry attempts.")
             elif isinstance(oe, APIError):
-                logger.error(f"API error: {oe}")
+                logger.exception(f"API error: {oe}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in ask_tool: {e}")
+            logger.exception(f"Unexpected error in ask_tool: {e}")
             raise

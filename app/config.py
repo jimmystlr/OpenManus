@@ -1,5 +1,7 @@
+import os
 import threading
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -11,8 +13,12 @@ def get_project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+CURRENT = datetime.now()
+FORMATTED_TIME = CURRENT.strftime("%Y%m%d%H%M%S")
 PROJECT_ROOT = get_project_root()
+# WORKSPACE_ROOT = PROJECT_ROOT / "workspace" / FORMATTED_TIME
 WORKSPACE_ROOT = PROJECT_ROOT / "workspace"
+# os.makedirs(WORKSPACE_ROOT, exist_ok=True)
 
 
 class LLMSettings(BaseModel):
@@ -190,7 +196,7 @@ class Config:
         llm_overrides = {
             k: v for k, v in raw_config.get("llm", {}).items() if isinstance(v, dict)
         }
-        print("llm_overrides", llm_overrides)
+        # print("llm_overrides", llm_overrides)
 
         default_settings = {
             "model": base_llm.get("model"),

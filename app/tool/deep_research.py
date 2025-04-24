@@ -1,7 +1,8 @@
 import asyncio
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from app.config import config
 from app.exceptions import ToolError
@@ -36,13 +37,17 @@ class DeepResearchResult(ToolResult):
 
         result_text = [f"DeepResearch results for '{self.query}':"]
         result_text.append(f"[Content]\n{self.content}")
-        result_text.append(f"[Reasoning]\n{self.reasoning}")
-        result_text.append(f"[Citations]\n" +
-            "\n".join(f"[{i+1}]Title: {d['title']}, URL: {d['url']}"
-                      for i, d in enumerate(self.citations)))
+        # result_text.append(f"[Reasoning]\n{self.reasoning}")
+        result_text.append(
+            f"[Citations]\n"
+            + "\n".join(
+                f"[{i+1}]Title: {d['title']}, URL: {d['url']}"
+                for i, d in enumerate(self.citations)
+            )
+        )
 
         # Set the output field to the content for display
-        self.output = "\n\n\n".join(result_text)
+        self.output = "\n\n".join(result_text)
         return self
 
 
@@ -96,10 +101,6 @@ class DeepResearch(BaseTool):
     }
 
     # Available research engines
-    # _research_engines: Dict[str, DeepResearchEngine] = {
-    #     "builtin": BuiltinDeepResearchEngine(),
-    #     "perplexity": PerplexityDeepResearchEngine(),
-    # }
     _research_engines: Dict[str, DeepResearchEngine] = PrivateAttr(
         default_factory=lambda: {
             "builtin": BuiltinDeepResearchEngine(),
@@ -140,12 +141,20 @@ class DeepResearch(BaseTool):
                             for citation in research_item.citations
                         ]
 
-                    return DeepResearchResult(
+                    result = DeepResearchResult(
                         query=query,
                         content=research_item.content,
                         reasoning=research_item.reasoning,
                         citations=citations,
                     )
+
+                    # Save the report to a local file
+                    report_path = (
+                        config.workspace_root / f"{query[:10]}_deep_research_report.md"
+                    )
+                    report_path.write_text(result.output)
+
+                    return result
 
             except Exception as e:
                 logger.error(f"Research error: {str(e)}")

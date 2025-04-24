@@ -2,6 +2,7 @@ import asyncio
 import sys
 from typing import Optional
 
+from prompt_toolkit import prompt
 from pydantic import Field
 
 from app.logger import logger
@@ -96,10 +97,10 @@ class UserControlTool(BaseTool):
                     loop = asyncio.get_event_loop()
 
                     # Run input in a separate thread to not block the event loop
-                    # Using input() instead of sys.stdin.readline() for more reliable input handling
                     def _get_input():
                         try:
-                            return input()
+                            # return input()
+                            return prompt()
                         except EOFError:
                             return ""
 
@@ -232,3 +233,11 @@ class UserControlTool(BaseTool):
 
             logger.info(f"Cancelled {count} pending user actions: {reason}")
             return count
+
+
+if __name__ == "__main__":
+    user_control = UserControlTool()
+    result = asyncio.run(user_control.execute(
+        message=f"Please input your prompt:",
+        timeout=60)
+    )

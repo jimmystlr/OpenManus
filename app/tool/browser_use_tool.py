@@ -63,6 +63,7 @@ class BrowserUseTool(BaseTool, Generic[Context]):
                     "switch_tab",
                     "open_tab",
                     "close_tab",
+                    "screenshot",
                 ],
                 "description": """\
 The browser action to perform. Due to the element indexes might be changed after executing an action,
@@ -84,6 +85,7 @@ Actions usage and their parameters required:
 - switch_tab: switch to browser tab with the specified "tab_id"
 - open_tab: open a new browser tab and navigate to the specified "url"
 - close_tab: close the current browser tab
+- screenshot: take a screenshot of the current page and save it to the specified "filepath"
 """,
             },
             "url": {
@@ -100,7 +102,7 @@ Actions usage and their parameters required:
             },
             "scroll_amount": {
                 "type": "integer",
-                "description": "Pixels to scroll (positive for down, negative for up) for 'scroll_down' or 'scroll_up' actions",
+                "description": "Pixels to scroll for 'scroll_down' or 'scroll_up' actions, always use positive number",
             },
             "tab_id": {
                 "type": "integer",
@@ -122,6 +124,10 @@ Actions usage and their parameters required:
                 "type": "integer",
                 "description": "Seconds to wait for 'wait' action",
             },
+            "filepath": {
+                "type": "string",
+                "description": "Image filepath to save screenshot, use absolute path and .jpg as the file extention name",
+            },
         },
         "required": ["action"],
         "dependencies": {
@@ -140,6 +146,7 @@ Actions usage and their parameters required:
             "web_search": ["query"],
             "wait": ["seconds"],
             "extract_content": ["goal"],
+            "screenshot": ["filepath"],
         },
     }
 
@@ -229,6 +236,7 @@ Actions usage and their parameters required:
         goal: Optional[str] = None,
         keys: Optional[str] = None,
         seconds: Optional[int] = None,
+        filepath: Optional[str] = None,
         **kwargs,
     ) -> ToolResult:
         """
@@ -259,6 +267,7 @@ Actions usage and their parameters required:
                     config.browser_config, "max_content_length", 2000
                 )
 
+                # FIXME(Loic): Use function mapping instead of if-else
                 # Navigation actions
                 if action == "go_to_url":
                     if not url:
@@ -338,6 +347,21 @@ Actions usage and their parameters required:
                     return ToolResult(
                         output=f"Scrolled {'down' if direction > 0 else 'up'} by {amount} pixels"
                     )
+
+                elif action == "screenshot":
+                    if not filepath:
+                        return ToolResult(
+                            error="Filepath is required for 'screenshot' action"
+                        )
+                    page = await context.get_current_page()
+                    await page.screenshot(
+                        full_page=False,
+                        animations="disabled",
+                        type="jpeg",
+                        quality=60,
+                        path=filepath,
+                    )
+                    return ToolResult(output=f"Screenshot saved to {filepath}")
 
                 elif action == "scroll_to_text":
                     if not text:

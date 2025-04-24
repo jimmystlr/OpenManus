@@ -143,8 +143,10 @@ class ToolCallAgent(ReActAgent):
 
             result = await self.execute_tool(command)
 
-            if self.max_observe:
-                result = result[: self.max_observe]
+            # FIXME(Loic): Max observe might truncate some important
+            # information in the result, remove it temporarily
+            # if self.max_observe:
+            #     result = result[: self.max_observe]
 
             logger.info(
                 f"🎯 Tool '{command.function.name}' completed its mission! Result: {result}"
